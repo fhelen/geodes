@@ -3,7 +3,7 @@
 from typing import List
 from dataclasses import dataclass, asdict
 import pandas as pd
-
+import datetime
 from pygeodes import Geodes
 from pygeodes import Config
 import pygeodes
@@ -15,13 +15,12 @@ class Object:
     endpoint: str
     bucket: str
     prefix: str
+    url: str
 
 @dataclass
 class Meta:
     tile_name: str
-    year: int
-    month: int
-    day: int
+    date: datetime.datetime
     sensor: str
 
 @dataclass
@@ -37,9 +36,9 @@ class UrlParser:
         self.bucket: str | None = None
         self.prefix: str | None = None
         self.tile_name : str | None = None
-        self.year: int | None = None
-        self.month: int | None = None
-        self.day: int | None = None
+        self.year: str | None = None
+        self.month: str | None = None
+        self.day: str | None = None
         self.sensor: str | None = None
 
 
@@ -49,22 +48,24 @@ class UrlParser:
         self.bucket = splits[3]
         self.prefix = "/".join(splits[4:])
         self.tile_name = splits[4]
-        self.year = int(splits[5])
-        self.month = int(splits[6])
-        self.day = int(splits[7])
+        self.year = splits[5]
+        self.month = splits[6]
+        self.day = splits[7]
         self.sensor = splits[8].split("_")[0]
 
 
     def get_object(self) -> Object:
+        url = "s3://"+self.bucket+"/"+self.prefix
         return Object(endpoint=self.endpoint,
                       bucket=self.bucket,
-                      prefix=self.prefix)
+                      prefix=self.prefix,
+                      url=url)
 
     def get_meta(self) -> Meta:
+        date_str = self.year+self.month+self.day
+        date = datetime.datetime.strptime(date_str, "%Y%m%d")
         return Meta(tile_name=self.tile_name,
-                    year=self.year,
-                    month=self.month,
-                    day=self.day,
+                    date=date,
                     sensor=self.sensor)
 
 class Catalog:
@@ -93,16 +94,41 @@ class Catalog:
             parser = UrlParser(properties["endpoint_url"])
             parser.parse()
             rows.append(Row(Object=parser.get_object(),
-                      Meta=parser.get_meta(),
-                      cloud_cover=properties["eo:cloud_cover"]))
+                            Meta=parser.get_meta(),
+                            cloud_cover=properties["eo:cloud_cover"]))
         return rows
 
-if __name__ == '__main__':
-    conf = Config(api_key="DaR6Shxv20x4oetSZzhP6Mj6VrdIPXvleCiXaZwjA6xod1YOAx",
-                  logging_level="DEBUG")
+def query_catalog(
+        catalog: Catalog,
+        tile_name: str,
+        start_date: str,
+        end_date: str) -> pd.DataFrame:
+    items = catalog.search_l2a(tile_name=tile_name,
+                               start_date=start_date,
+                               end_date=end_date)
+    return pd.json_normalize([asdict(element) for element in items])
+
+def main(
+        conf: pygeodes.Config,
+        list_tiles: List[str],
+        start_date: str,
+        end_date: str,
+        outfile: str) -> None:
     catalog = Catalog(conf)
-    items = catalog.search_l2a(tile_name="T30TXQ",
-                               start_date="2018-01-01",
-                               end_date="2018-12-31")
-    df = pd.json_normalize([asdict(element) for element in items])
-    print(df[df["Meta.month"] > 5])
+    df = pd.concat([query_catalog(catalog=catalog,
+                          tile_name=element,
+                          start_date=start_date,
+                          end_date=end_date) for element in list_tiles])
+    df.to_csv(outfile, index=False)
+    return
+
+
+if __name__ == '__main__':
+        conf = Config(api_key="DaR6Shxv20x4oetSZzhP6Mj6VrdIPXvleCiXaZwjA6xod1YOAx",
+                  logging_level="DEBUG")
+
+        main(conf=conf,
+             list_tiles=["T30TXQ"],
+             start_date="2018-01-01",
+             end_date="2018-12-31",
+             outfile="../catalog/theia_l2a.csv")
